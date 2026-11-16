@@ -1,0 +1,82 @@
+package com.ProjetoBiblioteca.security;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandlerImpl;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity(jsr250Enabled = true, securedEnabled = true, prePostEnabled = true)
+public class SecurityConfig {
+	@Autowired
+	private CorsConfig corsConfig;
+
+	@Autowired
+	private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+	@Autowired
+	private JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
+
+	@Autowired
+	private UserDetailsService userDetailsService;
+
+	@Autowired
+	private BCryptPasswordEncoder passwordEncoder;
+
+	@Bean
+	public AuthenticationProvider authenticationProvider() {
+		DaoAuthenticationProvider authenticationProvider = new DaoAuthenticationProvider(userDetailsService);
+		authenticationProvider.setPasswordEncoder(passwordEncoder);
+		return authenticationProvider;
+	}
+
+	@Bean
+	public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+		return config.getAuthenticationManager();
+	}
+
+	@Bean
+	public SecurityFilterChain filterChain(HttpSecurity http, LogSystemInterceptor logInterceptor) throws Exception {
+		var accessDeniedHandler = new AccessDeniedHandlerImpl();
+
+		http.cors(cors -> cors.configurationSource(corsConfig.corsConfigurationSource())).csrf(csrf -> csrf.disable())
+				.authorizeHttpRequests(authz -> authz
+		                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+		                .requestMatchers("/autentica/**").permitAll()
+						.requestMatchers(HttpMethod.GET, "/livros", "/livros/**", "/autores", "/autores/**").permitAll()
+		                .requestMatchers(HttpMethod.GET, "/logs").permitAll()
+		                .requestMatchers(HttpMethod.POST, "/logs", "/logs/**").denyAll()
+		                .requestMatchers(HttpMethod.PUT, "/logs", "/logs/**").denyAll()
+		                .requestMatchers(HttpMethod.PATCH, "/logs", "/logs/**").denyAll()
+		                .requestMatchers(HttpMethod.DELETE, "/logs", "/logs/**").denyAll()
+		                .requestMatchers(HttpMethod.POST, "/usuario/saveUser").permitAll()
+		                .requestMatchers(HttpMethod.GET, "/usuario").hasAuthority("ADMIN")
+		                .requestMatchers(HttpMethod.GET, "/usuario/pendentes").hasAuthority("ADMIN")
+		                .requestMatchers(HttpMethod.PATCH, "/usuario/*/aprovacao").hasAuthority("ADMIN")
+		                .anyRequest().authenticated())
+				.exceptionHandling(ex -> ex.authenticationEntryPoint(jwtAuthenticationEntryPoint)
+						.accessDeniedHandler((request, response, exception) -> {
+							accessDeniedHandler.handle(request, response, exception);
+							logInterceptor.afterCompletion(request, response, null, null);
+						}))
+				.sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+				.authenticationProvider(authenticationProvider())
+				.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+		return http.build();
+	}
+}

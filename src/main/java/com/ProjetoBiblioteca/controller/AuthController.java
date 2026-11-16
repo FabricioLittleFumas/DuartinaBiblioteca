@@ -1,0 +1,89 @@
+package com.ProjetoBiblioteca.controller;
+
+import java.util.Map;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.ProjetoBiblioteca.model.JwtRequest;
+import com.ProjetoBiblioteca.model.JwtResponse;
+import com.ProjetoBiblioteca.model.RefreshToken;
+import com.ProjetoBiblioteca.security.JwtTokenUtil;
+import com.ProjetoBiblioteca.security.LogSystemInterceptor;
+import com.ProjetoBiblioteca.security.UserInfoUserDetailsService;
+import com.ProjetoBiblioteca.service.RefreshTokenService;
+import jakarta.servlet.http.HttpServletRequest;
+
+@RestController
+@RequestMapping("/autentica")
+@CrossOrigin
+public class AuthController {
+
+	@Autowired private AuthenticationManager authenticationManager;
+    @Autowired private JwtTokenUtil jwtTokenUtil;
+    @Autowired private UserInfoUserDetailsService userDetailsService;
+    @Autowired private RefreshTokenService refreshTokenService;
+
+    @PostMapping({"/authenticate", "/authenticate/modal-entrar"})
+    public ResponseEntity<?> createAuthenticationToken(@RequestBody JwtRequest authenticationRequest,
+            HttpServletRequest request) {
+        authenticate(authenticationRequest.getEmail(), authenticationRequest.getPassword());
+
+        final UserDetails userDetails = userDetailsService.loadUserByUsername(authenticationRequest.getEmail());
+        final String accessToken = jwtTokenUtil.generateAccessToken(userDetails);
+        final String refreshToken = refreshTokenService.createRefreshToken(userDetails.getUsername());
+
+        request.setAttribute(LogSystemInterceptor.LOGIN_EMAIL_ATTRIBUTE, userDetails.getUsername());
+        return ResponseEntity.ok(new JwtResponse(accessToken, refreshToken));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refreshToken(@RequestBody Map<String, String> request) {
+        String refreshTokenValue = request.get("refreshToken");
+
+        if (refreshTokenValue == null || refreshTokenValue.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Refresh token ausente"));
+        }
+
+        try {
+            RefreshToken stored = refreshTokenService.findByToken(refreshTokenValue)
+                    .orElseThrow(() -> new RuntimeException("Refresh token não encontrado"));
+
+            if (refreshTokenService.isExpired(stored)) {
+                refreshTokenService.deleteByToken(refreshTokenValue);
+                return ResponseEntity.status(401).body(Map.of("message", "Refresh token expirado"));
+            }
+
+            String email = stored.getUser().getEmail();
+            UserDetails userDetails = userDetailsService.loadUserByUsername(email);
+
+            String novoAccessToken = jwtTokenUtil.generateAccessToken(userDetails);
+            refreshTokenService.deleteByToken(refreshTokenValue);
+            String novoRefreshToken = refreshTokenService.createRefreshToken(email);
+
+            return ResponseEntity.ok(Map.of("accessToken", novoAccessToken, "refreshToken", novoRefreshToken));
+        } catch (Exception e) {
+            return ResponseEntity.status(401).body(Map.of("message", "Falha ao renovar token"));
+        }
+    }
+
+    private void authenticate(String email, String password) {
+        try {
+            authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(email, password));
+        } catch (DisabledException e) {
+            throw new DisabledException("USER_DISABLED");
+        } catch (BadCredentialsException e) {
+            throw new BadCredentialsException("INVALID_CREDENTIALS");
+        }
+    }
+}
